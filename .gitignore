@@ -5,6 +5,7 @@ _*
 *.asm
 *.sym
 *.img
+*.swp
 *.pyc
 vectors.S
 bootblock
@@ -14,6 +15,7 @@ initcode.out
 kernelmemfs
 mkfs
 kernel/kernel
+/.vscode/
 user/usys.S
 .gdbinit
 myapi.key
