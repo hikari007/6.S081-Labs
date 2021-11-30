@@ -47,6 +47,21 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+// 新建一个内核页表
+pagetable_t kvmcreate() {
+  pagetable_t kpgtbl = (pagetable_t)kalloc();
+  memset(kpgtbl, 0, PGSIZE);
+
+  ukvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  ukvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  ukvmmap(kpgtbl, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  ukvmmap(kpgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  ukvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  ukvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP - (uint64)etext, PTE_R | PTE_W);
+  ukvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return kpgtbl;
+}
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
@@ -121,18 +136,24 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+// 对用户进程内核页表做映射
+void ukvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm) {
+  if(mappages(kpgtbl, va, sz, pa, perm) != 0)
+    panic("ukvmmap");
+}
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
 // assumes va is page aligned.
 uint64
-kvmpa(uint64 va)
+kvmpa(pagetable_t kpagetable, uint64 va)
 {
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(kpagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -167,6 +188,9 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   return 0;
 }
 
+void kvmunmap(pagetable_t kpagetable, uint64 va, uint64 npages, int do_free) {
+  uvmunmap(kpagetable, va, npages, do_free);
+}
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
@@ -287,6 +311,12 @@ freewalk(pagetable_t pagetable)
     }
   }
   kfree((void*)pagetable);
+}
+
+// 释放进程内核栈，然后释放页表内存
+void kvmfree(pagetable_t kpagetable, uint64 kstack) {
+  kvmunmap(kpagetable, kstack, 1, 1);
+  freewalk(kpagetable);
 }
 
 // Free user memory pages,

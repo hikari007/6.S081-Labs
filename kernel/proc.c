@@ -34,14 +34,14 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
-  kvminithart();
+  // kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -121,6 +121,22 @@ found:
     return 0;
   }
 
+  // 内核页表
+  p->kpagetable = kvmcreate();
+  if(p->kpagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // 为进程创建内核栈，并在内核页表中做映射
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int)(p - proc));
+  ukvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +157,8 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kpagetable)
+    proc_freekpagetable(p->kpagetable, p->kstack);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -183,6 +201,16 @@ proc_pagetable(struct proc *p)
   }
 
   return pagetable;
+}
+
+void proc_freekpagetable(pagetable_t kpagetable, uint64 kstack) {
+  kvmunmap(kpagetable, UART0, 1, 0);
+  kvmunmap(kpagetable, VIRTIO0, 1, 0);
+  kvmunmap(kpagetable, CLINT, 0x10000 / PGSIZE, 0);
+  kvmunmap(kpagetable, PLIC, 0x400000 / PGSIZE, 0);
+  kvmunmap(kpagetable, KERNBASE, (PHYSTOP - KERNBASE) / PGSIZE, 0);
+  kvmunmap(kpagetable, TRAMPOLINE, 1, 0);
+  kvmfree(kpagetable, kstack);
 }
 
 // Free a process's page table, and free the
@@ -473,12 +501,18 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 在上下文切换前，将这个进程的内核页表放入satp寄存器
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
+        kvminithart();
         c->proc = 0;
 
+  
         found = 1;
       }
       release(&p->lock);
