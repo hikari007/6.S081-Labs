@@ -71,6 +71,8 @@ exec(char *path, char **argv)
   if((sz1 = uvmalloc(pagetable, sz, sz + 2*PGSIZE)) == 0)
     goto bad;
   sz = sz1;
+  if(sz > PLIC)
+    goto bad;
   uvmclear(pagetable, sz-2*PGSIZE);
   sp = sz;
   stackbase = sp - PGSIZE;
@@ -115,6 +117,12 @@ exec(char *path, char **argv)
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
+
+  // 取消掉内核页表之前的用户地址空间映射关系
+  // 注意proc_freepagetable已经将用户的物理内存释放掉了，此处传入do_free参数0
+  kvmunmap(p->kpagetable, 0, PGROUNDUP(oldsz) / PGSIZE, 0);
+  // 对内核页表进行新用户地址空间的映射
+  upagecopy(p->pagetable, p->kpagetable, 0, p->sz);
 
 
   if(p->pid == 1)

@@ -158,8 +158,9 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   if(p->kpagetable)
-    proc_freekpagetable(p->kpagetable, p->kstack);
+    proc_freekpagetable(p);
   p->pagetable = 0;
+  p->kpagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -203,14 +204,15 @@ proc_pagetable(struct proc *p)
   return pagetable;
 }
 
-void proc_freekpagetable(pagetable_t kpagetable, uint64 kstack) {
-  kvmunmap(kpagetable, UART0, 1, 0);
-  kvmunmap(kpagetable, VIRTIO0, 1, 0);
-  kvmunmap(kpagetable, CLINT, 0x10000 / PGSIZE, 0);
-  kvmunmap(kpagetable, PLIC, 0x400000 / PGSIZE, 0);
-  kvmunmap(kpagetable, KERNBASE, (PHYSTOP - KERNBASE) / PGSIZE, 0);
-  kvmunmap(kpagetable, TRAMPOLINE, 1, 0);
-  kvmfree(kpagetable, kstack);
+void proc_freekpagetable(struct proc *p) {
+  kvmunmap(p->kpagetable, UART0, 1, 0);
+  kvmunmap(p->kpagetable, VIRTIO0, 1, 0);
+  // kvmunmap(p->kpagetable, CLINT, 0x10000 / PGSIZE, 0);
+  kvmunmap(p->kpagetable, PLIC, 0x400000 / PGSIZE, 0);
+  kvmunmap(p->kpagetable, KERNBASE, (PHYSTOP - KERNBASE) / PGSIZE, 0);
+  kvmunmap(p->kpagetable, TRAMPOLINE, 1, 0);
+  kvmunmap(p->kpagetable, 0, PGROUNDUP(p->sz) / PGSIZE, 0);
+  kvmfree(p->kpagetable, p->kstack);
 }
 
 // Free a process's page table, and free the
@@ -249,6 +251,9 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // 对刚分配的一页做内核映射
+  upagecopy(p->pagetable, p->kpagetable, 0, p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -266,16 +271,24 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint sz;
+  uint sz, oldsz;
   struct proc *p = myproc();
 
-  sz = p->sz;
+  oldsz = sz = p->sz;
   if(n > 0){
+    if(oldsz + n > PLIC)
+      return -1;
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+    // 对新分配内存建立映射关系
+    if(upagecopy(p->pagetable, p->kpagetable, oldsz, sz - oldsz) < 0) {
       return -1;
     }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    // uvmdealloc已经完成了对应物理内存的释放，传入do_free为0
+    kvmunmap(p->kpagetable, PGROUNDUP(sz), (PGROUNDUP(oldsz) - PGROUNDUP(sz)) / PGSIZE, 0);
   }
   p->sz = sz;
   return 0;
@@ -301,7 +314,13 @@ fork(void)
     release(&np->lock);
     return -1;
   }
-  np->sz = p->sz;
+  np->sz = p->sz; 
+
+  if(upagecopy(np->pagetable, np->kpagetable, 0, np->sz) < 0) {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   np->parent = p;
 
