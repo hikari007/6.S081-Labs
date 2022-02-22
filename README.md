@@ -10,7 +10,7 @@
 - [x] [Lab: system calls](https://github.com/hikari007/6.S081-Labs/blob/syscall/syscall-lab.md)
 - [x] [Lab: page tables](https://github.com/hikari007/6.S081-Labs/blob/pgtbl/pgtbl-lab.md)
 - [x] [Lab: traps](https://github.com/hikari007/6.S081-Labs/blob/traps/trap-lab.md)
-- [ ] Lab: xv6 lazy page allocation
+- [x] [Lab: xv6 lazy page allocation](https://github.com/hikari007/6.S081-Labs/blob/lazy/lazy-lab.md)
 - [ ] Lab: Copy-on-Write Fork for xv6
 - [ ] Lab: Multithreading
 - [ ] Lab: locks
