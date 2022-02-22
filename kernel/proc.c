@@ -121,6 +121,16 @@ found:
     return 0;
   }
 
+  // traplab
+  if((p->trapframecopy = (struct trapframe *)kalloc()) == 0){
+    release(&p->lock);
+    return 0;
+  }
+  p->nticks = 0;
+  p->handler = 0;
+  p->curticks = 0;
+  p->inalarm = 0;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -139,6 +149,11 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  if(p->trapframecopy)
+    kfree((void*)p->trapframecopy);
+  p->trapframecopy = 0;
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;

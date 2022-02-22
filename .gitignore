@@ -9,6 +9,7 @@ vectors.S
 bootblock
 entryother
 initcode
+core
 initcode.out
 kernelmemfs
 mkfs
@@ -22,3 +23,4 @@ xv6.out*
 submissions/
 ph
 barrier
+.vscode/

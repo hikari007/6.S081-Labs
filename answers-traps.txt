@@ -1,0 +1,36 @@
+1. Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+
+由`main`中的`li a2,13`可知13存放在`a2`寄存器中
+
+2. Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+
+查看`main`的汇编代码发现只有`jalr 1536(ra)`这一句是跳转到`printf`函数，没有语句跳转到`f`函数，这里实际上是编译器作了优化处理，将`f(8) + 1`直接换成数字12，即对应`li a1,12`
+
+`f`函数本来是会调用`g`函数的，但是查看`f`的汇编代码可以发现编译器也是做了内联优化，即将`return g(x)`优化成`addiw a0,a0,3`
+
+3. At what address is the function printf located?
+
+根据注释可知`printf`地址为`0000000000000630`
+
+4. What value is in the register ra just after the jalr to printf in main?
+
+`auipc ra,0x0`的作用是将`pc`加立即数的结果存到`ra`寄存器中，即`ra=0x30`；下一句`jalr 1536(ra)` 的作用是将`ra`加立即数的结果赋给`pc`，即`pc=0x30+1536=0x630`，并且原`pc`加4的结果存放到`ra`寄存器，即`ra=0x34+4=0x38`，即跳转到`printf`后，`ra`寄存器中的值为`0x38`
+
+5. Run the following code.
+
+	unsigned int i = 0x00646c72;
+	printf("H%x Wo%s", 57616, &i);
+
+What is the output? 
+
+The output depends on that fact that the RISC-V is little-endian. If the RISC-V were instead big-endian what would you set i to in order to yield the same output? Would you need to change 57616 to a different value?
+
+从地址`&i`开始的4个字节分别对应: `0x72-r`, `0x6c-l`, `0x64-d`, `0x00-NUL`，而57616对应的16进制为0xe110，则`printf`打印结果为`He110 World`
+
+假设RISC-V为大端，想要得到相同的输出，则`i=0x726c6400`，数字57616不需要修改，无论大小端对应的都是数字`0xe110`，只是存储方式不同
+
+6. In the following code, what is going to be printed after 'y='? (note: the answer is not a specific value.) Why does this happen?
+
+	printf("x=%d y=%d", 3);
+
+答案取决于当前`a2`寄存器的值，当前`a0`存的是格式串，`a1`存的是数字3
