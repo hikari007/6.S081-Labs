@@ -101,10 +101,18 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
+  // if(pte == 0)
+  //   return 0;
+  // if((*pte & PTE_V) == 0)
+  //   return 0;
+
+  // 处理页表未分配或者无效问题
+  if (pte == 0 || (*pte & PTE_V) == 0) {
+    if (lazyalloc(va) < 0)
+      return 0;
+    pte = walk(pagetable, va, 0);
+  }
+
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
@@ -181,9 +189,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      continue;
+      // panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;
+      // panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -315,9 +325,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;
+      // panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
+      // panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -439,4 +451,29 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void printwalk(pagetable_t pgtbl, int depth) {
+    char *s;
+    if(depth == 0)
+        s = "..";
+    else if(depth == 1)
+        s = ".. ..";
+    else
+        s= ".. .. ..";
+    for(int i = 0; i < 512; ++i) {
+        pte_t pte = pgtbl[i];
+        if((pte & PTE_V) == 0)
+            continue;
+        uint64 child = PTE2PA(pte);
+        printf("%s%d: pte %p pa %p\n", s, i, pte, child);
+        if((pte & (PTE_R | PTE_W | PTE_X)) == 0)
+            printwalk((pagetable_t)child, depth + 1);
+    }
+}
+
+void vmprint(pagetable_t pgtbl, const char *s) {
+    printf("%s\n", s);
+    printf("page table %p\n", pgtbl);
+    printwalk(pgtbl, 0);
 }
