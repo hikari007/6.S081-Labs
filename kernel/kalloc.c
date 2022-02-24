@@ -62,6 +62,11 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  acquire(&kmem.lock);
+  for (int i = 0; i < (PHYSTOP - KERNBASE) / PGSIZE; i++)
+    kmem.refcnt[i] = 1;
+  release(&kmem.lock);
+
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -71,9 +76,6 @@ freerange(void *pa_start, void *pa_end)
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
-    acquire(&kmem.lock);
-    kmem.refcnt[pageindex((uint64)p)] = 1;
-    release(&kmem.lock);
     kfree(p);
   }
 }
