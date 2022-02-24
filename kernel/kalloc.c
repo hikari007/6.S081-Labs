@@ -21,7 +21,42 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  int refcnt[(PHYSTOP - KERNBASE) / PGSIZE];
 } kmem;
+
+inline int
+pageindex(uint64 pa)
+{
+  return (pa - KERNBASE) / PGSIZE;
+}
+
+inline int
+getrefcnt(uint64 pa)
+{
+  int cnt;
+  acquire(&kmem.lock);
+  cnt = kmem.refcnt[pageindex(pa)];
+  release(&kmem.lock);
+
+  return cnt; 
+}
+
+inline void
+refincr(uint64 pa)
+{
+  acquire(&kmem.lock);
+  kmem.refcnt[pageindex(pa)] += 1;
+  release(&kmem.lock);
+}
+
+inline void
+refdecr(uint64 pa)
+{
+  acquire(&kmem.lock);
+  kmem.refcnt[pageindex(pa)] -= 1;
+  release(&kmem.lock);
+}
+
 
 void
 kinit()
@@ -35,8 +70,12 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
+    acquire(&kmem.lock);
+    kmem.refcnt[pageindex((uint64)p)] = 1;
+    release(&kmem.lock);
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by v,
@@ -51,14 +90,16 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-
-  r = (struct run*)pa;
-
   acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+  // 引用计数减为0时，将物理页加入空闲链表
+  if (--kmem.refcnt[pageindex((uint64)pa)] == 0) {
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+
+    r = (struct run*)pa;
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+  }
   release(&kmem.lock);
 }
 
@@ -72,11 +113,14 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    kmem.refcnt[pageindex((uint64)r)] = 1;
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+
   return (void*)r;
 }
