@@ -46,7 +46,7 @@ pageindex(uint64 pa)
 int
 getrefcnt(uint64 pa)
 {
-  return refcnt[pageindex(pa)];
+    return refcnt[pageindex(pa)];
 }
 ```
 
@@ -56,13 +56,17 @@ getrefcnt(uint64 pa)
 void
 refincr(uint64 pa)
 {
+    acquire(&kmem.lock);
     refcnt[pageindex(pa)] += 1;
+    release(&kmem.lock);
 }
 
 void
 refdecr(uint64 pa)
 {
+    acquire(&kmem.lock);
     refcnt[pageindex(pa)] -= 1;
+    release(&kmem.lock);
 }
 ```
 
