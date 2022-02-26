@@ -68,7 +68,7 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else if(r_scause() == 15){
-    if (cow(r_stval()) < 0)
+    if (cowfault(p->pagetable, r_stval()) < 0)  
       p->killed = 1;
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
@@ -221,46 +221,41 @@ devintr()
   }
 }
 
-int 
-cow(uint64 va) 
+int
+cowfault(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
-  struct proc *p = myproc();
   uint64 pa;
   char *mem;
-  
-  // 找到pte，若不满足条件直接返回
-  pte = walk(p->pagetable, va, 0);
-  if(pte == 0)
-    return -1;
-  if((*pte & PTE_COW) == 0)
-    return -1;
-  if((*pte & PTE_V) == 0)
-    return -1;
-  if((*pte & PTE_U) == 0)
-    return -1;
-  
-  pa = PTE2PA(*pte);
+  int flags;
 
-  // 如果引用该物理页的进程数大于1，那么需要另外分配一个物理页拷贝原物理页
-  if(getrefcnt(pa) > 1) {
-    // 新分配一个物理页
-    mem = (char *)kalloc();
-    if(mem == 0)
-      return -1;
-    
-    // 拷贝原物理页
-    memmove(mem, (char *)pa, PGSIZE);
-    // 重新映射到新分配的物理页，去掉PTE_COW标志，并置位PTE_W标志
-    *pte = (PA2PTE((uint64)mem) | PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
-    // 映射成功，对原物理页引用计数减1
-    refdecr(pa);
-  }
-  // 如果引用该物理页的进程数等于1，那么就使用这个物理页
-  else {
-    // 去掉PTE_COW标志，置位PTE_W
-    *pte = (*pte & ~PTE_COW) | PTE_W;
-  }
+  // va可能是个非常大的非法地址，过滤掉防止walk内panic
+  if (va >= MAXVA)
+    return -1;
+
+  pte = walk(pagetable, va, 0);
+  // 利用pte判断，如果va是TRAMPOLINE, TRAPFRAME或者gurad page，过滤掉
+  if (pte == 0)
+    return -1;
+  if ((*pte & PTE_U) == 0 || (*pte & PTE_V) == 0)
+    return -1;
+  if ((*pte & PTE_COW) == 0)
+    return -1;
+
+  // 新分配一个页面，并将原页面拷贝到此
+  pa = PTE2PA(*pte);
+  mem = (char *)kalloc();
+  if (mem == 0)
+    return -1;
+  memmove(mem, (char *)pa, PGSIZE);
+
+  // 将pte映射到这个新分配的页面
+  flags = PTE_FLAGS(*pte);
+  flags = (flags & ~PTE_COW) | PTE_W;
+  *pte = PA2PTE((uint64)mem) | flags;
+
+  // 原页面引用计数减1
+  kfree((char *)pa);
 
   return 0;
 }

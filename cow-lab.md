@@ -22,15 +22,10 @@ COW使得正确释放进程占用物理页变得更加有技巧性，因为一�
 
 ![](./.pics/内核地址空间.bmp)
 
-为`kernel/kalloc.c`的`kmem`添加新成员`refcnt`数组来记录每个物理页的引用计数
+在`kernel/kalloc.c`添加数组`refcnt`来记录每个物理页的引用计数
 
 ```c
-struct {
-    struct spinlock lock;
-    struct run *freelist;
-    // 记录每个物理页的引用计数
-    int refcnt[(PHYSTOP - KERNBASE) / PGSIZE];
-} kmem;
+int refcnt[(PHYSTOP - KERNBASE) / PGSIZE];
 ```
 
 先实现几个之后可能会用到的函数
@@ -38,7 +33,7 @@ struct {
 `pageindex`根据物理地址计算对应`refcnt`数组的下标值
 
 ```c
-inline int
+int
 pageindex(uint64 pa)
 {
     return (pa - KERNBASE) / PGSIZE;
@@ -48,35 +43,26 @@ pageindex(uint64 pa)
 `getrefcnt`来获得某个物理页的引用计数
 
 ```c
-inline int
+int
 getrefcnt(uint64 pa)
 {
-  int cnt;
-  acquire(&kmem.lock);
-  cnt = kmem.refcnt[pageindex(pa)];
-  release(&kmem.lock);
-
-  return cnt; 
+  return refcnt[pageindex(pa)];
 }
 ```
 
 `refincr`增加某个物理页的引用计数，`refdecr`相反
 
 ```c
-inline void
+void
 refincr(uint64 pa)
 {
-    acquire(&kmem.lock);
-    kmem.refcnt[pageindex(pa)] += 1;
-    release(&kmem.lock);
+    refcnt[pageindex(pa)] += 1;
 }
 
-inline void
+void
 refdecr(uint64 pa)
 {
-    acquire(&kmem.lock);
-    kmem.refcnt[pageindex(pa)] -= 1;
-    release(&kmem.lock);
+    refcnt[pageindex(pa)] -= 1;
 }
 ```
 
@@ -90,9 +76,7 @@ freerange(void *pa_start, void *pa_end)
     p = (char*)PGROUNDUP((uint64)pa_start);
     for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE) {
         // 初始化引用计数为1
-        acquire(&kmem.lock);
-        kmem.refcnt[pageindex((uint64)p)] = 1;
-        release(&kmem.lock);
+        refcnt[pageindex((uint64)p)] = 1;
         kfree(p);
     }
 }
@@ -111,7 +95,7 @@ kalloc(void)
     if(r) {
         // 分配某个物理页面时，将其从空闲链表中移除，并置引用计数为1
         kmem.freelist = r->next;
-        kmem.refcnt[pageindex((uint64)r)] = 1;
+        refcnt[pageindex((uint64)r)] = 1;
     }
     release(&kmem.lock);
 
@@ -133,16 +117,24 @@ kfree(void *pa)
     if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
         panic("kfree");
 
+   	// 由于多个CPU可能同时执行kfree释放同一个物理页，需要加锁
     acquire(&kmem.lock);
-    // 引用计数减为0时，将物理页加入空闲链表
-    if (--kmem.refcnt[pageindex((uint64)pa)] == 0) {
-        // Fill with junk to catch dangling refs.
-        memset(pa, 1, PGSIZE);
-        
-        r = (struct run*)pa;   
-        r->next = kmem.freelist;
-        kmem.freelist = r;
-    }
+    int cnt = getrefcnt((uint64)pa);
+    refdecr((uint64)pa);
+    release(&kmem.lock);
+	
+    // 引用计数减1后为0，才执行下面代码来将物理页加入空闲链表
+    if (cnt > 1)
+        return;
+
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+
+    r = (struct run*)pa;
+
+    acquire(&kmem.lock);
+    r->next = kmem.freelist;
+    kmem.freelist = r;
     release(&kmem.lock);
 }
 ```
@@ -170,22 +162,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
         if((*pte & PTE_V) == 0)
             panic("uvmcopy: page not present");
         pa = PTE2PA(*pte);
-        flags = PTE_FLAGS(*pte);
-
-        // 去掉父进程对物理页pa的写权限，并表明它是一个COW页
+        // 写保护，并表明是一个cow页
         *pte = (*pte & ~PTE_W) | PTE_COW;
-
-        // if((mem = kalloc()) == 0)
-        //   goto err;
-        // memmove(mem, (char*)pa, PGSIZE);
-
-        // 子进程相同虚拟页映射到物理页pa，pte设置为不可写
-        if(mappages(new, i, PGSIZE, pa, (flags & ~PTE_W) | PTE_COW) != 0){
-            // kfree(mem);
+        flags = PTE_FLAGS(*pte);
+        // pa这个物理页引用计数加1
+        refincr(pa);
+        if(mappages(new, i, PGSIZE, pa, flags) != 0){
             goto err;
         }
-        // 映射成功则将引用计数加1
-    	refincr(pa);
     }
     return 0;
 
@@ -195,49 +179,44 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 }
 ```
 
-在`kernel/trap.c`中实现函数`cow`来处理缺页异常
+在`kernel/trap.c`中实现函数`cowfault`来处理缺页异常
 
 ```c
-int 
-cow(uint64 va) 
+int
+cowfault(pagetable_t pagetable, uint64 va)
 {
     pte_t *pte;
-    struct proc *p = myproc();
     uint64 pa;
     char *mem;
+    int flags;
 
-    // 找到pte，若不满足条件直接返回
-    pte = walk(p->pagetable, va, 0);
-    if(pte == 0)
-        return -1;
-    if((*pte & PTE_COW) == 0)
-        return -1;
-    if((*pte & PTE_V) == 0)
-        return -1;
-    if((*pte & PTE_U) == 0)
+    // va可能是个非常大的非法地址，过滤掉防止walk内panic
+    if (va >= MAXVA)
         return -1;
 
+    pte = walk(pagetable, va, 0);
+    // 利用pte判断，如果va是TRAMPOLINE, TRAPFRAME或者gurad page，过滤掉
+    if (pte == 0)
+        return -1;
+    if ((*pte & PTE_U) == 0 || (*pte & PTE_V) == 0)
+        return -1;
+    if ((*pte & PTE_COW) == 0)
+        return -1;
+
+    // 新分配一个页面，并将原页面拷贝到此
     pa = PTE2PA(*pte);
+    mem = (char *)kalloc();
+    if (mem == 0)
+        return -1;
+    memmove(mem, (char *)pa, PGSIZE);
 
-    // 如果引用该物理页的进程数大于1，那么需要另外分配一个物理页拷贝原物理页
-    if(getrefcnt(pa) > 1) {
-        // 新分配一个物理页
-        mem = (char *)kalloc();
-        if(mem == 0)
-            return -1;
+    // 将pte映射到这个新分配的页面
+    flags = PTE_FLAGS(*pte);
+    flags = (flags & ~PTE_COW) | PTE_W;
+    *pte = PA2PTE((uint64)mem) | flags;
 
-        // 拷贝原物理页
-        memmove(mem, (char *)pa, PGSIZE);
-        // 重新映射到新分配的物理页，去掉PTE_COW标志，并置位PTE_W标志
-        *pte = (PA2PTE((uint64)mem) | PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
-        // 映射成功，对原物理页引用计数减1
-        refdecr(pa);
-    }
-    // 如果引用该物理页的进程数等于1，那么就使用这个物理页
-    else {
-        // 去掉PTE_COW标志，置位PTE_W
-        *pte = (*pte & ~PTE_COW) | PTE_W;
-    }
+    // 原页面引用计数减1
+    kfree((char *)pa);
 
     return 0;
 }
@@ -254,7 +233,7 @@ usertrap(void)
     ...
     
     else if(r_scause() == 15) {
-    	if (cow(r_stval()) < 0)
+    	if (cowfault(p->pagetable, r_stval()) < 0)
             p->killed = 1;
     }
     
@@ -272,19 +251,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
     while(len > 0){
         va0 = PGROUNDDOWN(dstva);
-        pa0 = walkaddr(pagetable, va0);
-        if(pa0 == 0)
+
+        // 过滤非法地址
+        if (va0 >= MAXVA)
             return -1;
-		
-        // 如果COW造成无法写入，那么调用cow来处理
         pte_t *pte = walk(pagetable, va0, 0);
-        if (!(*pte & PTE_W) && (*pte & PTE_COW)) {
-            if (cow(va0) < 0)
+        if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+            return -1;
+
+        // 对cow页做处理
+        if (*pte & PTE_COW) {
+            if (cowfault(pagetable, va0) < 0)
                 return -1;
-            // cow会将pte映射到可写的物理页
-            pa0 = PTE2PA(*pte);
         }
 
+        pa0 = PTE2PA(*pte);
+        if(pa0 == 0)
+            return -1;
         n = PGSIZE - (dstva - va0);
         if(n > len)
             n = len;
@@ -311,15 +294,42 @@ file: ok
 ALL COW TESTS PASSED
 ```
 
-执行`usertests`，有时候会全部样例通过，有时最后出现如下错误，且每次丢失页数不一样，猜测是锁的问题
+执行`usertests`，全部样例通过
 
 ```sh
 $ usertests
+usertests starting
+test execout: OK
+test copyin: OK
+test copyout: OK
 ...
-test iref: OK
 test forktest: OK
 test bigdir: OK
-FAILED -- lost some free pages 31877 (out of 31878)
+ALL TESTS PASSED
 ```
 
-由于调试了很长时间，还是没有解决问题，本次实验先做到这里，待以后更加深入了解xv6再尝试解决
+最后`make grade`，结果如下
+
+```sh
+$ make qemu-gdb
+(24.2s)
+== Test   simple ==
+  simple: OK
+== Test   three ==
+  three: OK
+== Test   file ==
+  file: OK
+== Test usertests ==
+$ make qemu-gdb
+(172.8s)
+== Test   usertests: copyin ==
+  usertests: copyin: OK
+== Test   usertests: copyout ==
+  usertests: copyout: OK
+== Test   usertests: all tests ==
+  usertests: all tests: OK
+== Test time ==
+time: OK
+Score: 110/110
+```
+
