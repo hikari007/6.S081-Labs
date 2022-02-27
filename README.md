@@ -11,7 +11,7 @@
 - [x] [Lab: page tables](https://github.com/hikari007/6.S081-Labs/blob/pgtbl/pgtbl-lab.md)
 - [x] [Lab: traps](https://github.com/hikari007/6.S081-Labs/blob/traps/trap-lab.md)
 - [x] [Lab: xv6 lazy page allocation](https://github.com/hikari007/6.S081-Labs/blob/lazy/lazy-lab.md)
-- [x] [Lab: Copy-on-Write Fork for xv6](https://github.com/hikari007/6.S081-Labs/blob/thread/thread-lab.md)
+- [x] [Lab: Copy-on-Write Fork for xv6](https://github.com/hikari007/6.S081-Labs/blob/cow/cow-lab.md)
 - [x] [Lab: Multithreading](https://github.com/hikari007/6.S081-Labs/blob/thread/thread-lab.md)
 - [ ] Lab: locks
 - [ ] Lab: file system
